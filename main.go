@@ -17,15 +17,19 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
-	//"github.com/c9s/goprocinfo/linux"
+	"github.com/c9s/goprocinfo/linux"
+	netns "github.com/containernetworking/plugins/pkg/ns"
 	"github.com/gdamore/tcell/v2"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rivo/tview"
+	"github.com/vishvananda/netlink"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -54,64 +58,41 @@ type Process struct {
 }
 
 var (
-	infoView     *tview.TextView
-	nsTableView  *tview.Table
-	nsDetailView *tview.TextView
-	rootView     *tview.Flex
+	dao *Dao
+
+	app           *tview.Application
+	infoView      *tview.TextView
+	nsTableView   *tview.Table
+	detailLayout  *tview.Flex
+	nsDetailView  *tview.Table
+	pidDetailView *tview.Table
+	debugView     *tview.TextView
+
+	layout   *tview.Flex
+	rootView *tview.Pages
 )
 
+func init() {
+
+}
+
 func main() {
-	dao := NewDao()
+	dao = NewDao()
 	CreateViews()
+	SetKey()
 
 	data := dao.GetNSWithPidCount()
-	cols := []string{"NS", "TYPE", "NPROCS"}
-	for r := 0; r < len(data)+1; r++ {
-		if r == 0 {
-			nsTableView.SetCell(r, 0,
-				tview.NewTableCell(cols[0]).
-					SetTextColor(tcell.ColorYellow).
-					SetAlign(tview.AlignCenter).SetSelectable(false))
-			nsTableView.SetCell(r, 1,
-				tview.NewTableCell(cols[1]).
-					SetTextColor(tcell.ColorYellow).
-					SetAlign(tview.AlignCenter).SetSelectable(false))
-			nsTableView.SetCell(r, 2,
-				tview.NewTableCell(cols[2]).
-					SetTextColor(tcell.ColorYellow).
-					SetAlign(tview.AlignCenter).SetSelectable(false))
-			continue
-		}
-
-		nsTableView.SetCell(r, 0,
-			tview.NewTableCell(data[r-1][0]).
-				SetTextColor(tcell.ColorWhite).
-				SetAlign(tview.AlignCenter))
-		nsTableView.SetCell(r, 1,
-			tview.NewTableCell(data[r-1][1]).
-				SetTextColor(tcell.ColorWhite).
-				SetAlign(tview.AlignCenter))
-		nsTableView.SetCell(r, 2,
-			tview.NewTableCell(data[r-1][2]).
-				SetTextColor(tcell.ColorWhite).
-				SetAlign(tview.AlignCenter))
-	}
+	TableHelper(nsTableView, data)
 	nsTableView.SetSelectionChangedFunc(func(row, column int) {
-		if row <= 0 || column < 0 {
-			return
-		}
-		nsDetailView.Clear()
-		// TODO
-		bb := dao.GetNSDetail(nsTableView.GetCell(row, 0).Text)
-
-		fmt.Fprintf(nsDetailView, "%s ", bb)
+		//fmt.Fprint(debugView, fmt.Sprintf("select row %d co %d\n", row, column))
+		log.Printf("select row %d co %d", row, column)
+		UpdateDetailView(row)
 	})
 	if nsTableView.GetRowCount() > 1 {
 		nsTableView.Select(1, 0)
 	}
 
-	app := tview.NewApplication()
-	if err := app.SetRoot(rootView, true).EnableMouse(true).Run(); err != nil {
+	if err := app.Run(); err != nil {
 		panic(err)
 	}
 }
@@ -207,32 +188,127 @@ func ProcessToProcNS(procs []Process) []ProcNS {
 	return result
 }
 
+// CreateViews create all views
 func CreateViews() {
+	app = tview.NewApplication()
 	infoView = tview.NewTextView().
 		SetDynamicColors(true).
 		SetRegions(true).
 		SetWrap(false)
-	hints := []string{"help", "ns"}
+	hints := [][]string{{"F1", "ns"}, {"F5", "refresh"}, {"F12", "quit"}}
 	for i := 0; i < len(hints); i++ {
-		fmt.Fprintf(infoView, `F%d ["%d"][darkcyan]%s[white][""]  `, i+1, i, hints[i])
+		fmt.Fprintf(infoView, `%s ["%d"][darkcyan]%s[white][""]  `, hints[i][0], i, hints[i][1])
 	}
+
 	nsTableView = tview.NewTable().
 		SetBorders(false).
 		SetSelectable(true, false).
 		SetFixed(1, 0)
 
-	nsDetailView = tview.NewTextView()
+	nsDetailView = tview.NewTable().
+		SetBorders(false).
+		SetSelectable(true, false).
+		SetFixed(1, 0)
 
-	rootView = tview.NewFlex().
+	pidDetailView = tview.NewTable().
+		SetBorders(false).
+		SetSelectable(true, false).
+		SetFixed(1, 0)
+
+	detailLayout = tview.NewFlex().
+		SetDirection(tview.FlexRow)
+
+	debugView = tview.NewTextView().
+		SetWrap(true).
+		SetChangedFunc(func() {
+			app.Draw()
+		})
+	debugView.SetBorder(true).SetTitle(" debug").SetBorderAttributes(tcell.AttrBold)
+	log.SetOutput(debugView)
+
+	layout = tview.NewFlex().
 		SetDirection(tview.FlexRow).
 		AddItem(tview.NewFlex().
 			AddItem(nsTableView, 0, 1, true).
-			AddItem(tview.NewFlex().
-				SetDirection(tview.FlexRow).
-				AddItem(nsDetailView, 0, 1, false).
-				AddItem(tview.NewBox().SetBorder(true), 0, 1, false),
-				0, 3, true), 0, 1, true).
+			AddItem(detailLayout.
+				AddItem(nsDetailView, 0, 2, false).
+				AddItem(pidDetailView, 0, 2, false).
+				AddItem(debugView, 0, 1, false),
+				0, 3, false), 0, 1, true).
 		AddItem(infoView, 1, 1, false)
+
+	rootView = tview.NewPages()
+	rootView.AddPage("main", layout, true, true)
+
+	app.SetRoot(rootView, true)
+}
+
+// UpdateDetailView
+func UpdateDetailView(row int) {
+	if row <= 0 {
+		return
+	}
+	nsDetailView.Clear()
+	// TODO
+	bb := dao.GetNSDetail(nsTableView.GetCell(row, 0).Text)
+	TableHelper(nsDetailView, bb)
+
+	pidDetailView.Clear()
+	bb = dao.GetProcessDetail(nsTableView.GetCell(row, 0).Text)
+	TableHelper(pidDetailView, bb)
+}
+
+// SetKey set shortcuts
+func SetKey() {
+	// for global
+	nsTableView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyF1:
+			// TODO witch ns type
+			//form := tview.NewForm()
+			//for _, i := range wantedNS {
+			//	form.AddCheckbox(i, true, func(checked bool) {
+			//
+			//	})
+			//}
+			//
+			//modal := tview.NewFlex().SetDirection(tview.FlexColumn).
+			//	AddItem(nil, 0, 1, false).
+			//	AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+			//		AddItem(nil, 0, 1, false).
+			//		AddItem(form, 13, 1, true).
+			//		AddItem(nil, 0, 1, false), 55, 1, true).
+			//	AddItem(nil, 0, 1, false)
+			//rootView.AddPage("modal", modal,true,true)
+			//modal.set
+		case tcell.KeyF2:
+		case tcell.KeyF5:
+			row, _ := nsTableView.GetSelection()
+			UpdateDetailView(row)
+		case tcell.KeyF12:
+			app.Stop()
+		}
+
+		return event
+	})
+}
+
+// TableHelper wrap to fill table data
+func TableHelper(t *tview.Table, data [][]string) {
+	if len(data) == 0 {
+		return
+	}
+	for r := 0; r < len(data); r++ {
+		for c := 0; c < len(data[0]); c++ {
+			cell := tview.NewTableCell(data[r][c]).
+				SetTextColor(tcell.ColorWhite).
+				SetAlign(tview.AlignCenter)
+			if r == 0 {
+				cell.SetTextColor(tcell.ColorYellow).SetSelectable(false)
+			}
+			t.SetCell(r, c, cell)
+		}
+	}
 }
 
 type Dao struct {
@@ -245,12 +321,37 @@ func NewDao() *Dao {
 	return &Dao{DB: db}
 }
 
+func (d *Dao) GetPids(ns string) []int {
+	var pids []int
+	rows, err := d.DB.Raw("select pid from proc where namespace=?", ns).Rows()
+	if err != nil {
+		//TODO log
+		return pids
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pid string
+		err := rows.Scan(&pid)
+		if err != nil {
+			panic(err)
+		}
+		_, err = os.Stat(filepath.Join("/proc", pid))
+		if err != nil {
+			continue
+		}
+		p, _ := strconv.Atoi(pid)
+		pids = append(pids, p)
+	}
+	sort.Ints(pids)
+	return pids
+}
+
 func (d *Dao) GetNSWithPidCount() [][]string {
-	var data [][]string
+	data := [][]string{{"NS", "TYPE", "NPROCS"}}
 	rows, err := d.DB.Raw("select namespace, ns_type, count(*) as count from proc group by namespace,ns_type").Rows()
 	if err != nil {
 		//TODO log
-		return nil
+		return data
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -267,34 +368,89 @@ func (d *Dao) GetNSWithPidCount() [][]string {
 	return data
 }
 
-func (d *Dao) GetNSDetail(ns string) []byte {
-	rows, err := d.DB.Raw("select pid from proc where namespace=?", ns).Rows()
+func (d *Dao) GetNSDetail(ns string) [][]string {
+	data := [][]string{{"IF", "Type", "Addr", "rxErr", "rxDrop", "txErr", "txDrop", "MTU", "F"}}
+
+	pids := d.GetPids(ns)
+
+	netNS, err := netns.GetNS(fmt.Sprintf("/proc/%d/ns/net", pids[0]))
 	if err != nil {
-		//TODO log
-		return nil
+		return data
 	}
-	defer rows.Close()
-	var pids []string
-	for rows.Next() {
-		var pid string
-		err := rows.Scan(&pid)
+	defer netNS.Close()
+	var links []netlink.Link
+	err = netNS.Do(func(ns netns.NetNS) error {
+		var err error
+		links, err = netlink.LinkList()
 		if err != nil {
-			panic(err)
+			return err
 		}
-		pids = append(pids, pid)
-	}
-
-	bb, err := ioutil.ReadFile(filepath.Join("/proc", pids[0], "net/dev"))
-	if err != nil {
-		//TODO log
 
 		return nil
+	})
+	if err != nil {
+		return data
 	}
-	return bb
-	//networkStats, err := linux.ReadNetworkStat(filepath.Join("/proc", pids[0], "net/dev"))
-	//if err != nil {
-	//	//TODO log
-	//	return
-	//}
-	//networkStats[0].
+
+	//linux.ReadNetStat()
+	networkStats, err := linux.ReadNetworkStat(fmt.Sprintf("/proc/%d/net/dev", pids[0]))
+	if err != nil {
+		//TODO log
+		return data
+	}
+	for _, stat := range networkStats {
+		i := 0
+		for ; i < len(links); i++ {
+			if links[i].Attrs().Name == stat.Iface {
+				break
+			}
+		}
+		data = append(data, []string{
+			stat.Iface,
+			links[i].Type(),
+			links[i].Attrs().HardwareAddr.String(),
+			strconv.FormatUint(stat.RxErrs, 10),
+			strconv.FormatUint(stat.RxDrop, 10),
+			strconv.FormatUint(stat.TxErrs, 10),
+			strconv.FormatUint(stat.TxDrop, 10),
+			strconv.Itoa(links[i].Attrs().MTU),
+			links[i].Attrs().Flags.String(),
+		})
+
+	}
+	return data
+}
+
+func (d *Dao) GetProcessDetail(ns string) [][]string {
+	data := [][]string{{"PID", "Name", "S", "Cpu", "Command"}}
+	pids := d.GetPids(ns)
+	for _, pid := range pids {
+		p, err := linux.ReadProcess(uint64(pid), "/proc")
+		if err != nil {
+			continue
+		}
+		cmd := p.Cmdline
+		if len(p.Cmdline) > 20 {
+			cmd = p.Cmdline[:20]
+		}
+
+		data = append(data, []string{
+			strconv.Itoa(pid),
+			p.Status.Name,
+			p.Stat.State,
+			formatStr(p.Status.CpusAllowed),
+			cmd,
+		})
+	}
+
+	return data
+}
+
+// ugly...
+func formatStr(b []uint32) string {
+	var ss []string
+	for _, i := range b {
+		ss = append(ss, fmt.Sprintf("%b", i))
+	}
+	return strings.Join(ss, " ")
 }
