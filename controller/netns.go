@@ -17,6 +17,7 @@
 package controller
 
 import (
+	"github.com/gdamore/tcell/v2"
 	"github.com/l1b0k/volans/modle"
 	"github.com/l1b0k/volans/views"
 
@@ -56,10 +57,10 @@ func NewNetNSController() *NetNSController {
 	}
 }
 
-func (n *NetNSController) Reload(v interface{}) *NetNSController {
+func (n *NetNSController) Reload(v interface{}) {
 	ns, ok := v.(string)
 	if !ok {
-		return n
+		return
 	}
 	// clear table
 	n.Clear()
@@ -85,5 +86,23 @@ func (n *NetNSController) Reload(v interface{}) *NetNSController {
 			n.SetCell(r+1, c-skipped, f.Cell(data[r][c], data[r][c]))
 		}
 	}
-	return n
+}
+
+func (n *NetNSController) SetKeybinding(a *App) {
+	n.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		a.setGlobalKeybinding(event)
+		return event
+	})
+}
+
+func (n *NetNSController) SetFocus() {
+	n.SetSelectable(true, false)
+}
+
+func (n *NetNSController) UnFocus() {
+	n.SetSelectable(false, false)
+}
+
+func (n *NetNSController) Info() {
+
 }

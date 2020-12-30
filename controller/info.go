@@ -14,18 +14,32 @@
  limitations under the License.
 */
 
-package views
+package controller
 
 import (
+	"fmt"
+
 	"github.com/rivo/tview"
 )
 
-// NewProcView show proc info relate to this namespace
-func NewProcView() *tview.Table {
-	view := tview.NewTable().
-		SetBorders(false).
-		SetSelectable(false, false).
-		SetFixed(1, 0)
-	view.SetBorder(true).SetTitle("proc")
-	return view
+type InfoController struct {
+	*tview.TextView
+}
+
+func NewInfoController() *InfoController {
+	infoView := &InfoController{
+		TextView: tview.NewTextView().
+			SetDynamicColors(true).
+			SetRegions(true).
+			SetWrap(false),
+	}
+	hints := [][]string{{"Tab", "toggle"}, {"F5", "refresh"}, {"F12", "quit"}}
+	for i := 0; i < len(hints); i++ {
+		fmt.Fprintf(infoView, `%s ["%d"][darkcyan]%s[white][""]  `, hints[i][0], i, hints[i][1])
+	}
+	return infoView
+}
+
+func (n *InfoController) Reload(v interface{}) *InfoController {
+	return n
 }

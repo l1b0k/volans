@@ -17,6 +17,7 @@
 package controller
 
 import (
+	"github.com/gdamore/tcell/v2"
 	"github.com/l1b0k/volans/modle"
 	"github.com/l1b0k/volans/views"
 
@@ -42,7 +43,7 @@ func NewNSController() *NSController {
 	}
 }
 
-func (n *NSController) Reload(v interface{}) *NSController {
+func (n *NSController) Reload(v interface{}) {
 	// clear table
 	n.Clear()
 	// fill head
@@ -71,5 +72,23 @@ func (n *NSController) Reload(v interface{}) *NSController {
 	if n.GetRowCount() > 1 {
 		n.Select(1, 0)
 	}
-	return n
+}
+
+func (n *NSController) SetKeybinding(a *App) {
+	n.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		a.setGlobalKeybinding(event)
+		return event
+	})
+}
+
+func (n *NSController) SetFocus() {
+	n.SetSelectable(true, false)
+}
+
+func (n *NSController) UnFocus() {
+	n.SetSelectable(false, false)
+}
+
+func (n *NSController) Info() {
+
 }

@@ -17,6 +17,7 @@
 package controller
 
 import (
+	"github.com/gdamore/tcell/v2"
 	"github.com/l1b0k/volans/modle"
 	"github.com/l1b0k/volans/views"
 
@@ -44,10 +45,10 @@ func NewProcController() *ProcController {
 	}
 }
 
-func (n *ProcController) Reload(v interface{}) *ProcController {
+func (n *ProcController) Reload(v interface{}) {
 	ns, ok := v.(string)
 	if !ok {
-		return n
+		return
 	}
 	// clear table
 	n.Clear()
@@ -73,5 +74,23 @@ func (n *ProcController) Reload(v interface{}) *ProcController {
 			n.SetCell(r+1, c-skipped, f.Cell(data[r][c], data[r][c]))
 		}
 	}
-	return n
+}
+
+func (n *ProcController) SetKeybinding(a *App) {
+	n.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		a.setGlobalKeybinding(event)
+		return event
+	})
+}
+
+func (n *ProcController) SetFocus() {
+	n.SetSelectable(true, false)
+}
+
+func (n *ProcController) UnFocus() {
+	n.SetSelectable(false, false)
+}
+
+func (n *ProcController) Info() {
+
 }

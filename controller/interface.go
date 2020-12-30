@@ -14,18 +14,18 @@
  limitations under the License.
 */
 
-package views
+package controller
 
 import (
 	"github.com/rivo/tview"
 )
 
-// NewProcView show proc info relate to this namespace
-func NewProcView() *tview.Table {
-	view := tview.NewTable().
-		SetBorders(false).
-		SetSelectable(false, false).
-		SetFixed(1, 0)
-	view.SetBorder(true).SetTitle("proc")
-	return view
+type Interface interface {
+	tview.Primitive
+
+	Reload(v interface{})
+	SetKeybinding(a *App)
+	SetFocus()
+	UnFocus()
+	Info()
 }

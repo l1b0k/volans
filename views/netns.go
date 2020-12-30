@@ -8,7 +8,7 @@ import (
 func NewNetNSView() *tview.Table {
 	view := tview.NewTable().
 		SetBorders(false).
-		SetSelectable(true, false).
+		SetSelectable(false, false).
 		SetFixed(1, 0)
 	view.SetBorder(true).SetTitle("net")
 	return view
