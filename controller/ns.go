@@ -39,6 +39,7 @@ func NewNSController() *NSController {
 			{Text: "NS", Cell: views.CellAlignLeft},
 			{Text: "TYPE", Cell: views.CellAlignRight},
 			{Text: "NPROCS", Cell: views.CellAlignRight},
+			{Text: "POD", Cell: views.CellAlignRight},
 		},
 	}
 }

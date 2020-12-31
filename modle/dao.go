@@ -17,140 +17,70 @@
 package modle
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/c9s/goprocinfo/linux"
 	netns "github.com/containernetworking/plugins/pkg/ns"
+	"github.com/docker/docker/api/types"
+	docker "github.com/docker/docker/client"
 	"github.com/safchain/ethtool"
+	"github.com/shirou/gopsutil/process"
 	"github.com/vishvananda/netlink"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // TODO
 var supportedNS = []string{"net"}
 
-type ProcNS struct {
-	Pid       string `gorm:"column:pid"`
+type Proc struct {
+	Pid       string `gorm:"primaryKey,column:pid"`
 	Namespace string `gorm:"column:namespace"`
 	NSType    string `gorm:"column:ns_type"`
 }
 
-// TableName overrides the table name used by User to `profiles`
-func (ProcNS) TableName() string {
+// TableName overrides the table name
+func (Proc) TableName() string {
 	return "proc"
 }
 
-type Namespace struct {
-	Type  string // the name of subsystem
-	Inode string // inode number of this namespace
+type Container struct {
+	Pid          string `gorm:"primaryKey,column:pid"`
+	PodNamespace string `gorm:"column:pod_namespace"`
+	PodName      string `gorm:"column:pod_name"`
+	Type         string `gorm:"column:type"` // io.kubernetes.docker.type podsandbox/container
 }
 
-type Process struct {
-	PID       string
-	Namespace map[string]Namespace
-}
-
-type Dao struct {
-	DB *gorm.DB
+// TableName overrides the table name
+func (Container) TableName() string {
+	return "container"
 }
 
 func initDB() *gorm.DB {
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{Logger: logger.Discard})
 	if err != nil {
 		panic("failed to connect database")
 	}
-	err = db.AutoMigrate(&ProcNS{})
+	err = db.AutoMigrate(&Proc{}, &Container{})
 	if err != nil {
 		panic("failed to migrate database")
 	}
 	return db
 }
 
-func initProcData(db *gorm.DB) {
-	procs, err := GetAllProcess()
-	if err != nil {
-		panic(err)
-	}
-	flatted := ProcessToProcNS(procs)
-	for _, ns := range flatted {
-		db.Create(&ns)
-	}
-}
-
-// GetAllProcess return pid list sorted
-func GetAllProcess() ([]Process, error) {
-	dirs, err := ioutil.ReadDir("/proc")
-	if err != nil {
-		return nil, err
-	}
-	var pids []int
-	for i := 0; i < len(dirs); i++ {
-		pid, err := strconv.Atoi(dirs[i].Name())
-		if err != nil {
-			// not pid
-			continue
-		}
-		pids = append(pids, pid)
-	}
-	sort.Ints(pids)
-
-	var processes []Process
-	for i := 0; i < len(pids); i++ {
-		// read all ns for the pid
-		ns := make(map[string]Namespace, len(supportedNS))
-		for _, nsType := range supportedNS {
-			inode, err := GetNSByPid(strconv.Itoa(pids[i]), nsType)
-			if err != nil {
-				continue
-			}
-			ns[nsType] = Namespace{
-				Type:  nsType,
-				Inode: inode,
-			}
-		}
-
-		p := Process{
-			PID:       strconv.Itoa(pids[i]),
-			Namespace: ns,
-		}
-		processes = append(processes, p)
-	}
-
-	return processes, nil
-}
-
-// GetNSByPid get namespace inode id by pid and namespace type
-func GetNSByPid(pid string, nsType string) (string, error) {
-	info, err := os.Readlink(filepath.Join("/proc", pid, "ns", nsType))
-	if err != nil {
-		return "", err
-	}
-
-	return info[len(nsType)+2 : len(info)-1], nil
-}
-
-// ProcessToProcNS flat the record
-func ProcessToProcNS(procs []Process) []ProcNS {
-	result := make([]ProcNS, 0, len(procs))
-	for _, p := range procs {
-		for _, nsType := range supportedNS {
-			ns := p.Namespace[nsType]
-			result = append(result, ProcNS{
-				Pid:       p.PID,
-				Namespace: ns.Inode,
-				NSType:    nsType,
-			})
-		}
-	}
-	return result
+type Dao struct {
+	DB           *gorm.DB
+	DockerClient *docker.Client
 }
 
 var dao *Dao
@@ -159,10 +89,112 @@ var once sync.Once
 func GetDao() *Dao {
 	once.Do(func() {
 		db := initDB()
-		initProcData(db)
-		dao = &Dao{DB: db}
+
+		client, err := docker.NewClientWithOpts(
+			docker.WithVersion("v1.21"),
+		)
+		if err != nil {
+			panic(err)
+		}
+
+		dao = &Dao{
+			DB:           db,
+			DockerClient: client,
+		}
+		dao.Run()
+		dao.LoadProcData()
 	})
 	return dao
+}
+
+func (d *Dao) LoadProcData() {
+	pids, err := process.Pids()
+	if err != nil {
+		return
+	}
+	var procs []Proc
+	result := d.DB.Find(&procs)
+	if result.Error == nil {
+		for _, proc := range procs {
+			ok := false
+			for _, id := range pids {
+				if strconv.Itoa(int(id)) == proc.Pid {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				// delete
+				d.DB.Delete(&proc)
+			}
+		}
+	}
+	// create
+	for _, id := range pids {
+		ok := false
+		for _, proc := range procs {
+			if strconv.Itoa(int(id)) == proc.Pid {
+				ok = true
+				break
+			}
+		}
+		if ok {
+			continue
+		}
+		for _, nsType := range supportedNS {
+			inode, err := GetNSByPid(id, nsType)
+			if err != nil {
+				continue
+			}
+			p := Proc{
+				Pid:       strconv.Itoa(int(id)),
+				Namespace: inode,
+				NSType:    nsType,
+			}
+
+			d.DB.Create(&p)
+		}
+	}
+
+}
+
+func (d *Dao) Run() {
+	if d.DockerClient == nil {
+		return
+	}
+	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+	containers, err := d.DockerClient.ContainerList(ctx, types.ContainerListOptions{})
+	if err != nil {
+		return
+	}
+
+	for _, s := range containers {
+		state, err := d.DockerClient.ContainerInspect(ctx, s.ID)
+		if err != nil {
+			continue
+		}
+		// only care sandbox
+		if s.Labels["io.kubernetes.docker.type"] != "podsandbox" {
+			continue
+		}
+
+		var c Container
+		result := d.DB.Where("pod_namespace = ? and pod_name = ?", s.Labels["io.kubernetes.pod.namespace"], s.Labels["io.kubernetes.pod.name"]).First(&c)
+		if result.Error != nil {
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				d.DB.Create(&Container{
+					Pid:          strconv.Itoa(state.State.Pid),
+					PodNamespace: s.Labels["io.kubernetes.pod.namespace"],
+					PodName:      s.Labels["io.kubernetes.pod.name"],
+					Type:         s.Labels["io.kubernetes.docker.type"],
+				})
+			}
+		} else {
+			// update pid only
+			c.Pid = strconv.Itoa(state.State.Pid)
+			d.DB.Save(c)
+		}
+	}
 }
 
 func (d *Dao) GetPIDs(ns string) []int {
@@ -192,6 +224,9 @@ func (d *Dao) GetPIDs(ns string) []int {
 
 func (d *Dao) GetNSWithPidCount() [][]string {
 	var data [][]string
+	var containers []Container
+	d.DB.Model(&Container{}).Find(&containers)
+
 	rows, err := d.DB.Raw("select namespace, ns_type, count(*) as count from proc group by namespace,ns_type").Rows()
 	if err != nil {
 		//TODO log
@@ -207,7 +242,10 @@ func (d *Dao) GetNSWithPidCount() [][]string {
 			panic(err)
 		}
 
-		data = append(data, []string{ns, nsType, strconv.Itoa(count)})
+		podInfo := map[string]interface{}{}
+		d.DB.Raw("select b.pod_namespace as pod_namespace, b.pod_name as pod_name from"+
+			" proc as a , container as b where a.pid = b.pid and a.namespace = ?", ns).First(&podInfo)
+		data = append(data, []string{ns, nsType, strconv.Itoa(count), fmt.Sprintf("%s/%s", podInfo["pod_namespace"], podInfo["pod_name"])})
 	}
 	return data
 }
@@ -336,4 +374,14 @@ func formatBool(b bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// GetNSByPid get namespace inode id by pid and namespace type
+func GetNSByPid(pid int32, nsType string) (string, error) {
+	info, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/%s", pid, nsType))
+	if err != nil {
+		return "", err
+	}
+
+	return info[len(nsType)+2 : len(info)-1], nil
 }

@@ -78,7 +78,7 @@ func (a *App) createViews() {
 				SetDirection(tview.FlexRow).
 				AddItem(a.netNSController, 0, 1, false).
 				AddItem(a.procController, 0, 1, false),
-				0, 5, false), 0, 1, true).
+				0, 4, false), 0, 1, true).
 		AddItem(a.infoController, 1, 1, false)
 
 	a.rootView = tview.NewPages()
