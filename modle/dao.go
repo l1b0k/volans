@@ -44,7 +44,7 @@ import (
 var supportedNS = []string{"net"}
 
 type Proc struct {
-	Pid       string `gorm:"primaryKey,column:pid"`
+	Pid       string `gorm:"primaryKey;column:pid;index:idx_pid"`
 	Namespace string `gorm:"column:namespace"`
 	NSType    string `gorm:"column:ns_type"`
 }
