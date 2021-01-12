@@ -102,6 +102,9 @@ func (a *App) setGlobalKeybinding(event *tcell.EventKey) {
 	case tcell.KeyBacktab:
 	//a.Previous()
 	case tcell.KeyF5:
+
+	case tcell.KeyF12:
+		a.Application.Stop()
 	}
 }
 
